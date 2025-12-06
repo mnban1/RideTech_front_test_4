@@ -2,8 +2,8 @@
 // 学習目的：fetch + async/await を用いた GET / POST、並列取得、タイムアウト、状態切替の実装
 
 // ===== ユーティリティ（そのまま使用可） =====
-const $ = (sel, ctx=document) => ctx.querySelector(sel);
-const $$ = (sel, ctx=document) => Array.from(ctx.querySelectorAll(sel));
+const $ = (sel, ctx = document) => ctx.querySelector(sel);
+const $$ = (sel, ctx = document) => Array.from(ctx.querySelectorAll(sel));
 
 // ===== ここから実装対象 =====
 // タイムアウト付き fetch（AbortController を使って中断可能にする）
@@ -15,6 +15,15 @@ async function fetchJSON(url, { timeoutMs = 5000 } = {}) {
   //  3) HTTP ステータスを判定し、200系以外は throw new Error('HTTP ' + res.status)
   //  4) res.json() を返す
   //  5) finally でタイマーを必ず clear する
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(id);
+  }
 }
 
 // モック POST エンドポイント（/api/contact）
@@ -27,56 +36,97 @@ async function postJSON(url, payload, { timeoutMs = 5000 } = {}) {
   //     - payload.email に 'fail' が含まれる場合は throw new Error('サーバエラー…')
   //     - それ以外は { ok: true, message: '送信を受け付けました。' } を返す
   //  2) それ以外の URL は通常の fetch で POST し、ステータス判定・タイムアウト処理を行う
+  if (url.endsWith("/api/contact")) {
+    await new Promise((r) => setTimeout(r, 800)); // 擬似レイテンシ
+    // 失敗シミュレーション：メールに "fail" が含まれていたらエラー
+    if (String(payload.email || "").includes("fail")) {
+      throw new Error("サーバエラー：送信できませんでした。");
+    }
+    return { ok: true, message: "送信を受け付けました。" };
+  }
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(id);
+  }
 }
 
 // ===== 状態管理（そのまま使用） =====
 const dom = {
-  status: $('#status'),
-  loading: $('#loading'),
-  error: $('#error'),
-  empty: $('#empty'),
-  retry: $('#retry'),
-  list: $('#list'),
-  modalRoot: $('#modal-root'),
-  form: $('#contact-form'),
-  result: $('#contact-result'),
+  status: $("#status"),
+  loading: $("#loading"),
+  error: $("#error"),
+  empty: $("#empty"),
+  retry: $("#retry"),
+  list: $("#list"),
+  modalRoot: $("#modal-root"),
+  form: $("#contact-form"),
+  result: $("#contact-result"),
 };
 
 function setStatus(msg) {
-  dom.status.textContent = msg ?? '';
+  dom.status.textContent = msg ?? "";
 }
-function show(el) { el.classList.remove('hidden'); }
-function hide(el) { el.classList.add('hidden'); }
+function show(el) {
+  el.classList.remove("hidden");
+}
+function hide(el) {
+  el.classList.add("hidden");
+}
 
 function startLoading() {
-  hide(dom.error); hide(dom.empty);
-  show(dom.loading); setStatus('読み込み中…');
-  dom.list.innerHTML = '';
+  hide(dom.error);
+  hide(dom.empty);
+  show(dom.loading);
+  setStatus("読み込み中…");
+  dom.list.innerHTML = "";
 }
-function stopLoading() { hide(dom.loading); setStatus(''); }
+function stopLoading() {
+  hide(dom.loading);
+  setStatus("");
+}
 
-function showError(message = 'エラーが発生しました。') {
-  stopLoading(); show(dom.error);
-  $('.notice-text', dom.error).textContent = message;
+function showError(message = "エラーが発生しました。") {
+  stopLoading();
+  show(dom.error);
+  $(".notice-text", dom.error).textContent = message;
 }
-function showEmpty() { stopLoading(); show(dom.empty); }
+function showEmpty() {
+  stopLoading();
+  show(dom.empty);
+}
 
 function renderList(items) {
   stopLoading();
-  if (!items || items.length === 0) { showEmpty(); return; }
-  dom.list.innerHTML = items.map(toCardHTML).join('');
+  if (!items || items.length === 0) {
+    showEmpty();
+    return;
+  }
+  dom.list.innerHTML = items.map(toCardHTML).join("");
   // 「詳細」ボタンにイベント付与
-  $$('.js-detail', dom.list).forEach(btn => {
-    btn.addEventListener('click', async (e) => {
+  $$(".js-detail", dom.list).forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
       const id = Number(e.currentTarget.dataset.id);
-      const product = items.find(p => p.id === id);
+      const product = items.find((p) => p.id === id);
       if (product) openDetail(product);
     });
   });
 }
 
 function toCardHTML(p) {
-  const price = new Intl.NumberFormat('ja-JP', { style:'currency', currency:'JPY' }).format(p.price);
+  const price = new Intl.NumberFormat("ja-JP", {
+    style: "currency",
+    currency: "JPY",
+  }).format(p.price);
   return `
 <li class="card">
   <div class="card-media">
@@ -96,7 +146,7 @@ function toCardHTML(p) {
 
 // ===== 詳細モーダル =====
 async function openDetail(product) {
-  document.body.classList.add('is-modal-open');
+  document.body.classList.add("is-modal-open");
   dom.modalRoot.innerHTML = modalSkeleton(product);
 
   try {
@@ -106,16 +156,22 @@ async function openDetail(product) {
     //     例）const [reviews] = await Promise.all([ fetchJSON('./data/reviews.json') ]);
     //  2) product.id で reviews をフィルタリング
     //  3) $('.modal-body', dom.modalRoot).innerHTML = detailHTML(product, list) で描画
+    const [reviews] = await Promise.all([fetchJSON("./data/reviews.json")]);
+    const list = (reviews || []).filter((r) => r.productId === product.id);
+    $(".modal-body", dom.modalRoot).innerHTML = detailHTML(product, list);
   } catch (e) {
-    $('.modal-body', dom.modalRoot).innerHTML = `<p class="notice-text">詳細の取得に失敗しました。</p>`;
+    $(
+      ".modal-body",
+      dom.modalRoot
+    ).innerHTML = `<p class="notice-text">詳細の取得に失敗しました。</p>`;
   }
 
   // 閉じる
-  $('.modal-close', dom.modalRoot).addEventListener('click', closeModal);
-  $('.modal-backdrop', dom.modalRoot).addEventListener('click', (e) => {
-    if (e.target.classList.contains('modal-backdrop')) closeModal();
+  $(".modal-close", dom.modalRoot).addEventListener("click", closeModal);
+  $(".modal-backdrop", dom.modalRoot).addEventListener("click", (e) => {
+    if (e.target.classList.contains("modal-backdrop")) closeModal();
   });
-  window.addEventListener('keydown', onEscClose);
+  window.addEventListener("keydown", onEscClose);
 }
 
 function modalSkeleton(p) {
@@ -134,19 +190,31 @@ function modalSkeleton(p) {
 }
 
 function detailHTML(p, reviews) {
-  const price = new Intl.NumberFormat('ja-JP', { style:'currency', currency:'JPY' }).format(p.price);
+  const price = new Intl.NumberFormat("ja-JP", {
+    style: "currency",
+    currency: "JPY",
+  }).format(p.price);
   const revHTML = reviews.length
-    ? `<ul>${reviews.map(r => `<li>★${r.stars} ${escapeHTML(r.author)}：${escapeHTML(r.comment)}</li>`).join('')}</ul>`
+    ? `<ul>${reviews
+        .map(
+          (r) =>
+            `<li>★${r.stars} ${escapeHTML(r.author)}：${escapeHTML(
+              r.comment
+            )}</li>`
+        )
+        .join("")}</ul>`
     : `<p>レビューはまだありません。</p>`;
 
   return `
   <figure>
     <img src="${p.image}" alt="${p.name}" width="640" height="400" />
-    <figcaption class="card-meta">${p.category} ／ 評価：${p.rating} ／ 価格：${price}</figcaption>
+    <figcaption class="card-meta">${p.category} ／ 評価：${
+    p.rating
+  } ／ 価格：${price}</figcaption>
   </figure>
   <div>
     <h4>商品説明</h4>
-    <p>${escapeHTML(p.description || '説明は準備中です。')}</p>
+    <p>${escapeHTML(p.description || "説明は準備中です。")}</p>
   </div>
   <div>
     <h4>レビュー</h4>
@@ -156,28 +224,38 @@ function detailHTML(p, reviews) {
 }
 
 function closeModal() {
-  document.body.classList.remove('is-modal-open');
-  dom.modalRoot.innerHTML = '';
-  window.removeEventListener('keydown', onEscClose);
+  document.body.classList.remove("is-modal-open");
+  dom.modalRoot.innerHTML = "";
+  window.removeEventListener("keydown", onEscClose);
 }
-function onEscClose(e) { if (e.key === 'Escape') closeModal(); }
+function onEscClose(e) {
+  if (e.key === "Escape") closeModal();
+}
 
-function escapeHTML(str='') {
-  return String(str).replace(/[&<>"']/g, s => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  })[s]);
+function escapeHTML(str = "") {
+  return String(str).replace(
+    /[&<>"']/g,
+    (s) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[s])
+  );
 }
 
 // ===== お問い合わせ（POST） =====
 function handleContact() {
-  dom.form.addEventListener('submit', async (e) => {
+  dom.form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    dom.result.textContent = '送信中…';
+    dom.result.textContent = "送信中…";
     const form = new FormData(dom.form);
     const payload = {
-      name: form.get('name')?.toString().trim(),
-      email: form.get('email')?.toString().trim(),
-      message: form.get('message')?.toString().trim(),
+      name: form.get("name")?.toString().trim(),
+      email: form.get("email")?.toString().trim(),
+      message: form.get("message")?.toString().trim(),
     };
 
     try {
@@ -186,15 +264,18 @@ function handleContact() {
       //  1) postJSON('/api/contact', payload) を await
       //  2) 成功メッセージを表示し、フォームを reset()
       //  3) 例外時はキャッチしてユーザーに分かる文言で表示
+      const res = await postJSON("/api/contact", payload);
+      dom.result.textContent = res?.message || "送信しました。";
+      dom.form.reset();
     } catch (err) {
-      dom.result.textContent = String(err?.message || '送信に失敗しました。');
+      dom.result.textContent = String(err?.message || "送信に失敗しました。");
     }
   });
 }
 
 // ===== 初期化 =====
 async function init() {
-  dom.retry.addEventListener('click', loadProducts);
+  dom.retry.addEventListener("click", loadProducts);
   handleContact();
   await loadProducts();
 }
@@ -206,9 +287,13 @@ async function loadProducts() {
     // 実装ポイント：
     //  1) fetchJSON('./data/products.json') を await
     //  2) renderList(products) を呼ぶ
+    const products = await fetchJSON("./data/products.json");
+    renderList(products);
   } catch (e) {
-    showError('データの取得に失敗しました（' + (e?.message || 'Unknown') + '）');
+    showError(
+      "データの取得に失敗しました（" + (e?.message || "Unknown") + "）"
+    );
   }
 }
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener("DOMContentLoaded", init);
